@@ -113,6 +113,7 @@ func (log *Log) addSegmentForOffset(offset uint64) error {
 	return nil
 }
 
+// implements server.CommitLog.Append
 func (log *Log) Append(rec *api.LogRecord) (appendIndex uint64, err error) {
 	log.mux.Lock()
 	defer log.mux.Unlock()
@@ -131,6 +132,7 @@ func (log *Log) Append(rec *api.LogRecord) (appendIndex uint64, err error) {
 	return appendIndex, nil
 }
 
+// implements server.CommitLog.Read
 func (log *Log) Read(offset uint64) (*api.LogRecord, error) {
 	log.mux.Lock()
 	defer log.mux.Unlock()

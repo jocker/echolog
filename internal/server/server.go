@@ -2,8 +2,39 @@ package server
 
 import (
 	"EchoLog/api/v1"
+	"EchoLog/internal/auth"
 	"context"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
+
+type subjectContextKey struct {
+}
+
+func getSubjectFromContext(ctx context.Context) string {
+	return ctx.Value(subjectContextKey{}).(string)
+}
+
+var authenticateMiddlewareFunc grpc_auth.AuthFunc = func(ctx context.Context) (context.Context, error) {
+	p, ok := peer.FromContext(ctx)
+
+	if !ok {
+		return nil, status.New(codes.Unknown, "peer not found").Err()
+	}
+
+	if p.AuthInfo == nil {
+		return context.WithValue(ctx, subjectContextKey{}, ""), nil
+	}
+	tlsInfo := p.AuthInfo.(credentials.TLSInfo)
+	subject := tlsInfo.State.VerifiedChains[0][0].Subject.CommonName
+	ctx = context.WithValue(ctx, subjectContextKey{}, subject)
+	return ctx, nil
+}
 
 type CommitLog interface {
 	Append(*api.LogRecord) (uint64, error)
@@ -11,8 +42,15 @@ type CommitLog interface {
 }
 
 type Config struct {
-	CommitLog CommitLog
+	CommitLog  CommitLog
+	Authorizer *auth.Authorizer
 }
+
+const (
+	objectWildcard = "*"
+	produceAction  = "produce"
+	consumeAction  = "consume"
+)
 
 type grpcServer struct {
 	api.UnimplementedLogServer
@@ -28,7 +66,32 @@ func newGrpcServer(config *Config) (srv *grpcServer, err error) {
 	return srv, nil
 }
 
+func NewGrpcServer(config *Config, opts ...grpc.ServerOption) (*grpc.Server, error) {
+
+	opts = append(opts, grpc.StreamInterceptor(
+		grpc_middleware.ChainStreamServer(
+			grpc_auth.StreamServerInterceptor(authenticateMiddlewareFunc),
+		)), grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+		grpc_auth.UnaryServerInterceptor(authenticateMiddlewareFunc),
+	)))
+
+	gsrv := grpc.NewServer(opts...)
+	srv, err := newGrpcServer(config)
+	if err != nil {
+		return nil, err
+	}
+	api.RegisterLogServer(gsrv, srv)
+	return gsrv, nil
+}
+
 func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (*api.ProduceResponse, error) {
+	if err := s.Authorizer.Authorize(
+		getSubjectFromContext(ctx),
+		objectWildcard,
+		consumeAction,
+	); err != nil {
+		return nil, err
+	}
 	offset, err := s.CommitLog.Append(req.Record)
 	if err != nil {
 		return nil, err
@@ -66,6 +129,7 @@ func (s *grpcServer) ConsumeStream(
 	req *api.ConsumeRequest,
 	stream api.Log_ConsumeStreamServer,
 ) error {
+
 	for {
 		select {
 		case <-stream.Context().Done():
