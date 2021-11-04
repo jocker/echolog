@@ -88,7 +88,7 @@ func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (*api
 	if err := s.Authorizer.Authorize(
 		getSubjectFromContext(ctx),
 		objectWildcard,
-		consumeAction,
+		produceAction,
 	); err != nil {
 		return nil, err
 	}
@@ -101,6 +101,13 @@ func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (*api
 
 func (s *grpcServer) Consume(ctx context.Context, req *api.ConsumeRequest) (
 	*api.ConsumeResponse, error) {
+	if err := s.Authorizer.Authorize(
+		getSubjectFromContext(ctx),
+		objectWildcard,
+		consumeAction,
+	); err != nil {
+		return nil, err
+	}
 	record, err := s.CommitLog.Read(req.Offset)
 	if err != nil {
 		return nil, err
